@@ -18,11 +18,10 @@
 
 """
 
-* When I first ran this, I generated the train/val splits, but didn't write out the
-  corresponding list of images, and had to jump through some hoops to recover that
-  list from the patch file names.  If I ever run this again, write out the train/val
-  image splits!
-
+* When I first ran this, I was pretty careless with train/val splitting.  There's
+  probably not a perfect split given the small number of examples for some classes,
+  but I could make at least some effort to do a sensible split.
+  
 """
 
 #%% Constants and imports

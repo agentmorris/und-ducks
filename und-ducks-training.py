@@ -316,6 +316,27 @@ python val.py --img 1280 --batch-size 8 --weights ${MODEL_FILE} --project usgs-g
 pass
 
 
+#%% Make plots during training
+
+results_file = os.path.expanduser('~/git/yolov5-current/und-ducks/und-ducks-yolov5x-nolinks-b8-img1280-e200/results.csv')
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+df = pd.read_csv(results_file)
+df = df.rename(columns=lambda x: x.strip())
+    
+fig,ax = plt.subplots()
+
+df.plot(x = 'epoch', y = 'val/box_loss', ax = ax) 
+df.plot(x = 'epoch', y = 'val/obj_loss', ax = ax, secondary_y = True) 
+
+df.plot(x = 'epoch', y = 'train/box_loss', ax = ax) 
+df.plot(x = 'epoch', y = 'train/obj_loss', ax = ax, secondary_y = True) 
+
+plt.show()
+
+
 #%% Convert YOLO val .json results to MD .json format
 
 # pip install jsonpickle humanfriendly tqdm skicit-learn
