@@ -745,7 +745,7 @@ options.num_to_visualize = 200
 options.viz_size = (800, -1)
 options.include_filename_links = True
 
-visualize_db.process_images(db_path=coco_patch_file,
+_ = visualize_db.process_images(db_path=coco_patch_file,
                             output_dir=os.path.join(output_dir,'patch_preview'),
                             image_base_dir=yolo_all_dir,
                             options=options)
