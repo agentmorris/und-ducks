@@ -19,7 +19,7 @@ These are listed in roughly the order in which you would use them.
 #### und-ducks-data-import.py
 
 * Match images to annotation files
-* Read the original annotations in Pascal VOX format
+* Read the original annotations in Pascal VOC format
 * Convert to COCO format
 * Do a bunch of miscellaneous consistency checking
 
