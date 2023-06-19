@@ -8,7 +8,7 @@ There are around 35,000 images total, about 95% of which contain no birds.  Imag
 
 <img src="sample_image.jpg" width="800px;"><br/>
 
-The annotations you can vaguely see as different colors correspond to different species of bird.  Most of this repo operates on 1280x1280 patches that look like this:
+The annotations you can vaguely see as different colors correspond to different species of bird.  Most of this repo operates on 1280x1280 patches that look like this (this is also a ground truth patch, not a model prediction):
 
 <img src="annotated_patch.jpg" width="800px;"><br/>
 
