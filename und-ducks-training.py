@@ -15,38 +15,7 @@
 #
 ########
 
-#%% TODO
-
-"""
-
-* Adjust hyperparameters (increase augmentation, match MDv5 parameters)
-
-https://github.com/agentmorris/MegaDetector/blob/main/detection/detector_training/experiments/megadetector_v5_yolo/hyp_mosaic.yml
-
-https://github.com/agentmorris/MegaDetector/tree/main/detection#training-with-yolov5
-
-* Add hard negative patches, and/or mine for hard negative images
-
-* Tinker with box size
-
-* Tinker with test-time augmentation
-
-* Try smaller YOLOv5's
-
-* Try 1280px YOLOv8 when it's available
-
-* Try fancier patch sampling to minimize the number of birds that are split across
-  patches.
-
-"""
-
-
 #%% Train
-
-# Tips:
-#
-# https://github.com/ultralytics/yolov5/wiki/Tips-for-Best-Training-Results
-
 
 ## Environment prep
 
@@ -99,8 +68,8 @@ IMAGE_SIZE=1280
 EPOCHS=200
 DATA_YAML_FILE=/home/user/data/und-ducks/dataset.yaml
 
-# TRAINING_RUN_NAME=und-ducks-yolov5x-b${BATCH_SIZE}-img${IMAGE_SIZE}-e${EPOCHS}
-TRAINING_RUN_NAME=und-ducks-yolov5x-nolinks-b${BATCH_SIZE}-img${IMAGE_SIZE}-e${EPOCHS}
+# TRAINING_RUN_NAME=und-ducks-yolov5x6-b${BATCH_SIZE}-img${IMAGE_SIZE}-e${EPOCHS}
+TRAINING_RUN_NAME=und-ducks-yolov5x6-nolinks-b${BATCH_SIZE}-img${IMAGE_SIZE}-e${EPOCHS}
 
 python train.py --img ${IMAGE_SIZE} --batch ${BATCH_SIZE} --epochs ${EPOCHS} --weights yolov5x6.pt --device 0,1 --project und-ducks --name ${TRAINING_RUN_NAME} --data ${DATA_YAML_FILE}
 """
@@ -111,7 +80,7 @@ python train.py --img ${IMAGE_SIZE} --batch ${BATCH_SIZE} --epochs ${EPOCHS} --w
 """
 cd ~/git/yolov5-current
 mamba activate yolov5
-tensorboard --logdir usgs-geese
+tensorboard --logdir usgs-ducks
 """
 
 
@@ -128,14 +97,36 @@ python train.py --resume
 pass
 
 
+#%% Make plots during training
+
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+
+results_file = os.path.expanduser('~/git/yolov5-current/und-ducks/und-ducks-yolov5x6-nolinks-b8-img1280-e200/results.csv')
+
+df = pd.read_csv(results_file)
+df = df.rename(columns=lambda x: x.strip())
+    
+fig,ax = plt.subplots()
+
+df.plot(x = 'epoch', y = 'val/box_loss', ax = ax) 
+df.plot(x = 'epoch', y = 'val/obj_loss', ax = ax, secondary_y = True) 
+
+df.plot(x = 'epoch', y = 'train/box_loss', ax = ax) 
+df.plot(x = 'epoch', y = 'train/obj_loss', ax = ax, secondary_y = True) 
+
+plt.show()
+
+
 #%% Back up trained weights
 
 """
-TRAINING_RUN_NAME="usgs-geese-yolov5x6-b8-img1280-e100"
-TRAINING_OUTPUT_FOLDER="/home/user/git/yolov5-current/usgs-geese/${TRAINING_RUN_NAME}/weights"
+TRAINING_RUN_NAME="und-ducks-yolov5x6-nolinks-b8-img1280-e200"
+TRAINING_OUTPUT_FOLDER="/home/user/git/yolov5-current/und-ducks/${TRAINING_RUN_NAME}/weights"
 
-cp ${TRAINING_OUTPUT_FOLDER}/best.pt ~/models/usgs-geese/${TRAINING_RUN_NAME}-best.pt
-cp ${TRAINING_OUTPUT_FOLDER}/last.pt ~/models/usgs-geese/${TRAINING_RUN_NAME}-last.pt
+cp ${TRAINING_OUTPUT_FOLDER}/best.pt ~/models/und-ducks/${TRAINING_RUN_NAME}-best.pt
+cp ${TRAINING_OUTPUT_FOLDER}/last.pt ~/models/und-ducks/${TRAINING_RUN_NAME}-last.pt
 """
 
 pass
@@ -145,20 +136,19 @@ pass
 
 import os
 
-model_base = os.path.expanduser('~/models/usgs-geese')
+model_base = os.path.expanduser('~/models/und-ducks')
 training_run_names = [
-    'usgs-geese-yolov5x6-b8-img1280-e125-of-200-20230401-ss',
-    'usgs-geese-yolov5x6-b8-img1280-e49-of-200-20230401-dm'
+    'und-ducks-yolov5x6-nolinks-b8-img1280-e200'    
 ]
 
-data_folder = os.path.expanduser('~/data/usgs-geese')
+data_folder = os.path.expanduser('~/data/und-ducks')
 image_size = 1280
 
 # Note to self: validation batch size appears to have no impact on mAP
 # (it shouldn't, but I verified that explicitly)
 batch_size_val = 8
 
-project_name = os.path.expanduser('~/tmp/usgs-geese-val')
+project_name = os.path.expanduser('~/tmp/und-ducks-val')
 data_file = os.path.join(data_folder,'dataset.yaml')
 augment = True
 
@@ -191,113 +181,7 @@ for k in model_file_to_command.keys():
     print('')
     cmd = model_file_to_command[k]
     print(cmd + '\n')
-    
 
-"""
-Results without augmentation
-"""
-
-"""
-usgs-geese-yolov5x6-b8-img1280-e125-of-200-20230401-ss-last.pt
-
-  Class     Images  Instances          P          R      mAP50   mAP50-95:
-    all      11547     136014      0.591      0.562      0.513      0.287
-  Brant      11547     101770      0.877      0.919      0.901       0.53
-  Other      11547      21246      0.694       0.35      0.398      0.223
-   Gull      11547       1594      0.481      0.561      0.422      0.204
- Canada      11547      10961      0.761      0.793      0.783      0.445
-Emperor      11547        443      0.141      0.187     0.0619     0.0325
-Speed: 0.5ms pre-process, 53.6ms inference, 0.9ms NMS per image at shape (8, 3, 1280, 1280)
-
-
-usgs-geese-yolov5x6-b8-img1280-e125-of-200-20230401-ss-best.pt
-
-  Class     Images  Instances          P          R      mAP50   mAP50-95:
-    all      11547     136014      0.618      0.563      0.539      0.295
-  Brant      11547     101770      0.861      0.927      0.908      0.526
-  Other      11547      21246      0.734      0.358      0.419      0.219
-   Gull      11547       1594      0.607      0.528       0.45      0.213
- Canada      11547      10961      0.766      0.853      0.844      0.479
-Emperor      11547        443       0.12      0.147      0.074     0.0372
-Speed: 0.5ms pre-process, 53.8ms inference, 1.1ms NMS per image at shape (8, 3, 1280, 1280)
-
-
-usgs-geese-yolov5x6-b8-img1280-e49-of-200-20230401-dm-last.pt
-
-  Class     Images  Instances          P          R      mAP50   mAP50-95:
-    all      11547     136014      0.621      0.559      0.536       0.29
-  Brant      11547     101770      0.865      0.925      0.908       0.53
-  Other      11547      21246      0.742      0.355       0.42      0.214
-   Gull      11547       1594      0.601      0.523      0.442      0.203
- Canada      11547      10961      0.776      0.848      0.839      0.467
-Emperor      11547        443      0.119      0.142     0.0708     0.0356
-Speed: 0.5ms pre-process, 53.5ms inference, 1.2ms NMS per image at shape (8, 3, 1280, 1280)
-
-
-usgs-geese-yolov5x6-b8-img1280-e49-of-200-20230401-dm-best.pt
-
-  Class     Images  Instances          P          R      mAP50   mAP50-95:
-    all      11547     136014      0.621      0.559      0.536       0.29
-  Brant      11547     101770      0.865      0.926      0.908       0.53
-  Other      11547      21246      0.742      0.355       0.42      0.214
-   Gull      11547       1594      0.601      0.523      0.442      0.203
- Canada      11547      10961      0.776      0.848      0.839      0.467
-Emperor      11547        443      0.119      0.142     0.0708     0.0356
-Speed: 0.5ms pre-process, 53.2ms inference, 1.1ms NMS per image at shape (8, 3, 1280, 1280)
-
-"""
-
-"""
-Results with augmentation
-"""
-
-"""
-usgs-geese-yolov5x6-b8-img1280-e125-of-200-20230401-ss-last.pt
-
-Class     Images  Instances          P          R      mAP50   mAP50-95:
-    all      11547     136014      0.587      0.565      0.515      0.324
-  Brant      11547     101770      0.868      0.924      0.899      0.572
-  Other      11547      21246      0.689      0.357      0.392      0.233
-   Gull      11547       1594      0.486      0.551      0.435      0.283
- Canada      11547      10961      0.755      0.809      0.792      0.497
-Emperor      11547        443      0.135      0.183     0.0579     0.0336
-
-  
-usgs-geese-yolov5x6-b8-img1280-e125-of-200-20230401-ss-best.pt
-
-  Class     Images  Instances          P          R      mAP50   mAP50-95:
-    all      11547     136014      0.601      0.563      0.535      0.324
-  Brant      11547     101770      0.844      0.928      0.906      0.562
-  Other      11547      21246      0.729       0.36      0.406      0.225
-   Gull      11547       1594      0.553      0.528       0.44       0.28
- Canada      11547      10961      0.764      0.857      0.849      0.513
-Emperor      11547        443      0.118       0.14     0.0731      0.041
-Speed: 0.5ms pre-process, 118.5ms inference, 1.8ms NMS per image at shape (8, 3, 1280, 1280)
-
-
-usgs-geese-yolov5x6-b8-img1280-e49-of-200-20230401-dm-last.pt
-
-  Class     Images  Instances          P          R      mAP50   mAP50-95:
-    all      11547     136014      0.607      0.561      0.531      0.326
-  Brant      11547     101770      0.852      0.928      0.908      0.571
-  Other      11547      21246      0.738      0.361       0.41      0.226
-   Gull      11547       1594      0.564      0.529      0.423      0.274
- Canada      11547      10961      0.769      0.857      0.843       0.52
-Emperor      11547        443      0.112      0.132     0.0694     0.0403
-Speed: 0.5ms pre-process, 118.5ms inference, 1.7ms NMS per image at shape (8, 3, 1280, 1280)
-
-
-usgs-geese-yolov5x6-b8-img1280-e49-of-200-20230401-dm-best.pt
-
- Class     Images  Instances          P          R      mAP50   mAP50-95:
-    all      11547     136014      0.607      0.561      0.531      0.326
-  Brant      11547     101770      0.852      0.928      0.908      0.571
-  Other      11547      21246      0.738      0.361       0.41      0.226
-   Gull      11547       1594      0.564      0.529      0.423      0.274
- Canada      11547      10961      0.769      0.857      0.843       0.52
-Emperor      11547        443      0.112      0.132     0.0694     0.0403
-
-"""
 
 """
 cd ~/git/yolov5-current
@@ -306,35 +190,7 @@ LD_LIBRARY_PATH=
 export PYTHONPATH=
 """
 
-"""
-TRAINING_RUN_NAME="usgs-geese-yolov5x6-b8-img1280-e100"
-MODEL_FILE="/home/user/models/usgs-geese/${TRAINING_RUN_NAME}-best.pt"
-DATA_FOLDER="/home/user/data/usgs-geese"
-
-python val.py --img 1280 --batch-size 8 --weights ${MODEL_FILE} --project usgs-geese --name ${TRAINING_RUN_NAME} --data ${DATA_FOLDER}/dataset.yaml 
-"""
 pass
-
-
-#%% Make plots during training
-
-results_file = os.path.expanduser('~/git/yolov5-current/und-ducks/und-ducks-yolov5x-nolinks-b8-img1280-e200/results.csv')
-
-import pandas as pd
-import matplotlib.pyplot as plt
-
-df = pd.read_csv(results_file)
-df = df.rename(columns=lambda x: x.strip())
-    
-fig,ax = plt.subplots()
-
-df.plot(x = 'epoch', y = 'val/box_loss', ax = ax) 
-df.plot(x = 'epoch', y = 'val/obj_loss', ax = ax, secondary_y = True) 
-
-df.plot(x = 'epoch', y = 'train/box_loss', ax = ax) 
-df.plot(x = 'epoch', y = 'train/obj_loss', ax = ax, secondary_y = True) 
-
-plt.show()
 
 
 #%% Convert YOLO val .json results to MD .json format
@@ -347,16 +203,16 @@ from data_management import yolo_output_to_md_output
 import json
 import glob
 
-class_mapping_file = os.path.expanduser('~/data/usgs-geese/usgs-geese-md-class-mapping.json')
+class_mapping_file = os.path.expanduser('~/data/und-ducks/und-ducks-md-class-mapping.json')
 with open(class_mapping_file,'r') as f:
     category_id_to_name = json.load(f)
                         
-base_folder = os.path.expanduser('~/tmp/usgs-geese-val')
+base_folder = os.path.expanduser('~/tmp/und-ducks-val')
 run_folders = os.listdir(base_folder)
 run_folders = [os.path.join(base_folder,s) for s in run_folders]
 run_folders = [s for s in run_folders if os.path.isdir(s)]
 
-image_base = os.path.expanduser('~/data/usgs-geese/yolo_val')
+image_base = os.path.expanduser('~/data/und-ducks/yolo_val')
 image_files = glob.glob(image_base + '/*.jpg')
 
 prediction_files = []
@@ -395,9 +251,9 @@ for prediction_file in prediction_files:
 
 #%% Visualize results with the MD visualization pipeline
 
-postprocessing_output_folder = os.path.expanduser('~/tmp/usgs-geese-previews')
+postprocessing_output_folder = os.path.expanduser('~/tmp/und-ducks-val-previews')
 
-import path_utils
+from md_utils import path_utils
 
 from api.batch_processing.postprocessing.postprocess_batch_results import (
     PostProcessingOptions, process_batch_results)
@@ -411,11 +267,11 @@ for prediction_file in md_format_prediction_files:
     options = PostProcessingOptions()
     options.image_base_dir = image_base
     options.include_almost_detections = True
-    options.num_images_to_sample = 7500
-    options.confidence_threshold = 0.15
+    options.num_images_to_sample = None
+    options.confidence_threshold = 0.25
     options.almost_detection_confidence_threshold = options.confidence_threshold - 0.05
     options.ground_truth_json_file = None
-    options.separate_detections_by_category = True
+    options.separate_detections_by_category = False
     # options.sample_seed = 0
     
     options.parallelize_rendering = True
@@ -444,19 +300,19 @@ for prediction_file in md_format_prediction_files:
 #
 
 """
-export PYTHONPATH=/home/user/git/MegaDetector
+export PYTHONPATH=/home/user/git/MegaDetector:/home/user/git/yolov5-current
 cd ~/git/MegaDetector/detection/
 mamba activate yolov5
 
-TRAINING_RUN_NAME="usgs-geese-yolov5x6-b8-img1280-e100"
-MODEL_FILE="/home/user/models/usgs-geese/${TRAINING_RUN_NAME}-best.pt"
-DATA_FOLDER="/home/user/data/usgs-geese-mini-500"
-RESULTS_FOLDER=${DATA_FOLDER}/results
+TRAINING_RUN_NAME="und-ducks-yolov5x6-nolinks-b8-img1280-e200-best"
+MODEL_FILE="/home/user/models/und-ducks/${TRAINING_RUN_NAME}.pt"
+DATA_FOLDER="/home/user/data/und-ducks"
+RESULTS_FOLDER="/home/user/tmp/und-ducks/md-pipeline-results"
+CLASS_MAPPING_FILE="/home/user/data/und-ducks/und-ducks-md-class-mapping.json"
 
-python run_detector_batch.py ${MODEL_FILE} ${DATA_FOLDER}/yolo_val ${RESULTS_FOLDER}/${TRAINING_RUN_NAME}-val.json --recursive --quiet --output_relative_filenames --class_mapping_filename ${DATA_FOLDER}/usgs-geese-md-class-mapping.json
+python run_detector_batch.py ${MODEL_FILE} ${DATA_FOLDER}/yolo_val ${RESULTS_FOLDER}/${TRAINING_RUN_NAME}-val.json --recursive --quiet --output_relative_filenames --class_mapping_filename ${CLASS_MAPPING_FILE}
 
-python run_detector_batch.py ${MODEL_FILE} ${DATA_FOLDER}/yolo_train ${RESULTS_FOLDER}/${TRAINING_RUN_NAME}-train.json --recursive --quiet --output_relative_filenames --class_mapping_filename ${DATA_FOLDER}/usgs-geese-md-class-mapping.json
-
+python run_detector_batch.py ${MODEL_FILE} ${DATA_FOLDER}/yolo_train ${RESULTS_FOLDER}/${TRAINING_RUN_NAME}-train.json --recursive --quiet --output_relative_filenames --class_mapping_filename ${CLASS_MAPPING_FILE}
 """
 
 #
@@ -464,22 +320,21 @@ python run_detector_batch.py ${MODEL_FILE} ${DATA_FOLDER}/yolo_train ${RESULTS_F
 #
 
 """
-mamba deactivate
-
+mamba activate cameratraps-detector
 cd ~/git/MegaDetector/api/batch_processing/postprocessing/
 
-TRAINING_RUN_NAME="usgs-geese-yolov5x6-b8-img1280-e100"
-DATA_FOLDER="/home/user/data/usgs-geese-mini-500"
-RESULTS_FOLDER=${DATA_FOLDER}/results
-PREVIEW_FOLDER=${DATA_FOLDER}/preview
+TRAINING_RUN_NAME="und-ducks-yolov5x6-nolinks-b8-img1280-e200-best"
+DATA_FOLDER="/home/user/data/und-ducks"
+RESULTS_FOLDER="/home/user/tmp/und-ducks/md-pipeline-results"
+PREVIEW_FOLDER="${DATA_FOLDER}/preview"
+CONF_THRESH=0.3
 
-python postprocess_batch_results.py ${RESULTS_FOLDER}/${TRAINING_RUN_NAME}-val.json ${PREVIEW_FOLDER}/${TRAINING_RUN_NAME}-val --image_base_dir ${DATA_FOLDER}/yolo_val --n_cores 12 --confidence_threshold 0.25 --parallelize_rendering_with_processes
+python postprocess_batch_results.py ${RESULTS_FOLDER}/${TRAINING_RUN_NAME}-val.json ${PREVIEW_FOLDER}/${TRAINING_RUN_NAME}-val --image_base_dir ${DATA_FOLDER}/yolo_val --n_cores 12 --confidence_threshold ${CONF_THRESH} --parallelize_rendering_with_processes --no_separate_detections_by_category
 
-python postprocess_batch_results.py ${RESULTS_FOLDER}/${TRAINING_RUN_NAME}-train.json ${PREVIEW_FOLDER}/${TRAINING_RUN_NAME}-train --image_base_dir ${DATA_FOLDER}/yolo_train --n_cores 12 --confidence_threshold 0.25 --parallelize_rendering_with_processes
+python postprocess_batch_results.py ${RESULTS_FOLDER}/${TRAINING_RUN_NAME}-train.json ${PREVIEW_FOLDER}/${TRAINING_RUN_NAME}-train --image_base_dir ${DATA_FOLDER}/yolo_train --n_cores 12 --confidence_threshold ${CONF_THRESH} --parallelize_rendering_with_processes --no_separate_detections_by_category
 
 xdg-open ${PREVIEW_FOLDER}/${TRAINING_RUN_NAME}-val/index.html 
 xdg-open ${PREVIEW_FOLDER}/${TRAINING_RUN_NAME}-train/index.html
-
 """
 
 pass
