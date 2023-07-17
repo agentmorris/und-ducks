@@ -84,8 +84,10 @@ def patch_level_preview(image_level_results_file,image_folder_base,preview_folde
     # Convert relative coordinates to absolute coordinates, and compute anything
     # we need to compute once per image (like patch boundaries)
     
+    print('Preprocessing images')
+    
     # im = image_level_results['images'][0]
-    for im in image_level_results['images']:
+    for im in tqdm(image_level_results['images']):
                 
         image_file_relative = im['file']
         image_file_absolute = os.path.join(image_folder_base,image_file_relative)
@@ -149,6 +151,8 @@ def patch_level_preview(image_level_results_file,image_folder_base,preview_folde
     patch_level_results['info'] = image_level_results['info']
     patch_level_results['detection_categories'] = image_level_results['detection_categories']
     patch_level_results['images'] = []
+    
+    print('Sampling patches and creating patch-level results files')
     
     # i_patch = 0; patch = sampled_patch_tuples[i_patch]
     #
@@ -240,7 +244,10 @@ def patch_level_preview(image_level_results_file,image_folder_base,preview_folde
         
     html_files = []
     
-    for confidence_threshold in preview_confidence_thresholds:
+    for i_confidence_threshold,confidence_threshold in enumerate(preview_confidence_thresholds):
+        
+        print('Writing preview page for confidence threshold {} of {}'.format(
+            i_confidence_threshold,len(preview_confidence_thresholds)))
         
         options = PostProcessingOptions()
         options.image_base_dir = patch_folder
@@ -425,10 +432,103 @@ def image_level_counting(image_level_results_file,
 
 if False:
     
+    #%% Separate train/val images in results files
+    
+    image_level_results_base = os.path.expanduser('~/tmp/und-ducks/image_level_results/')
+    
+    # Use this to specify non-default image folder bases for individual files
+    result_file_to_folder_base = {}
+    
+    image_level_results_filenames = os.listdir(image_level_results_base)
+    image_level_results_filenames = [fn for fn in image_level_results_filenames if \
+                                     fn.endswith('.json')]        
+    image_level_results_filenames = [fn for fn in image_level_results_filenames if \
+                                     'nms' in fn]
+    image_level_results_filenames = [fn for fn in image_level_results_filenames if \
+                                     ('val' not in fn and 'train' not in fn)]
+    
+    assert len(image_level_results_filenames) == 1
+    
+    image_level_results_filename = image_level_results_filenames[0]
+    image_level_results_filename = os.path.join(image_level_results_base,
+                                                    image_level_results_filename)
+    
+    image_level_results_filename_val = image_level_results_filename.replace('.json','_val.json')
+    image_level_results_filename_train = image_level_results_filename.replace('.json','_train.json')
+    image_level_results_filename_nontrain = image_level_results_filename.replace('.json','_nontrain.json')
+        
+    with open(image_level_results_filename,'r') as f:
+        image_level_results = json.load(f)
+    
+    training_output_dir = os.path.expanduser('~/data/und-ducks')
+    val_images_list_file = os.path.join(training_output_dir,'val_images.json')
+    train_images_list_file = os.path.join(training_output_dir,'train_images.json')
+    
+    with open(val_images_list_file,'r') as f:
+        val_images_list = json.load(f)
+    with open(train_images_list_file,'r') as f:
+        train_images_list = json.load(f)
+    
+    val_image_ids = set()
+    train_image_ids = set()
+    
+    # Convert this patch ID:
+    #
+    # '20200424_cot_17w212_pa_01_45m_x5s_dji_0455_2304_0000'
+    # 
+    # To an image ID:
+    #
+    # '20200424_cot_17w212_pa_01_45m_x5s_dji_0455'
+    for s in val_images_list:
+        val_image_ids.add('_'.join(s.split('_')[0:-2]))
+    for s in train_images_list:
+        train_image_ids.add('_'.join(s.split('_')[0:-2]))
+        
+    val_results = []
+    train_results = []
+    unused_results = []
+    
+    def relative_path_to_image_name(rp):
+        
+        image_name = rp.lower().replace('/','_')
+        assert image_name.endswith('.jpg')
+        image_name = image_name.replace('.jpg','')
+        return image_name
+
+    # im = image_level_results['images'][0]
+    for im in image_level_results['images']:
+        image_name = relative_path_to_image_name(im['file'])
+        if image_name in val_image_ids:
+            assert image_name not in train_image_ids
+            val_results.append(im)
+        elif image_name in train_image_ids:
+            assert image_name not in val_image_ids
+            train_results.append(im)
+        else:
+            unused_results.append(im)
+        
+    print('Found {} val, {} train, {} unused images'.format(
+        len(val_results),len(train_results),len(unused_results)))
+    
+    nontrain_results = val_results + unused_results
+    
+    with open(image_level_results_filename_val,'w') as f:
+        image_level_results['images'] = val_results
+        json.dump(image_level_results,f,indent=1)
+    
+    with open(image_level_results_filename_train,'w') as f:
+        image_level_results['images'] = train_results
+        json.dump(image_level_results,f,indent=1)
+    
+    with open(image_level_results_filename_nontrain,'w') as f:
+        image_level_results['images'] = nontrain_results
+        json.dump(image_level_results,f,indent=1)
+            
+        
     #%% Preview
     
     n_patches = 2000
-    preview_confidence_thresholds = [0.5,0.6,0.7]
+    preview_confidence_thresholds = [0.3,0.4,0.5,0.6,0.7]
     image_level_results_base = os.path.expanduser('~/tmp/und-ducks/image_level_results/')
     default_image_folder_base = '/media/user/My Passport/2020_pair_surveys_UND_SFelege'
     
@@ -440,10 +540,12 @@ if False:
                                      fn.endswith('.json')]        
     image_level_results_filenames = [fn for fn in image_level_results_filenames if \
                                      'nms' in fn]
+    image_level_results_filenames = [fn for fn in image_level_results_filenames if \
+                                     ('nontrain' in fn or 'val' in fn or 'train' in fn)]
     
     image_level_results_filenames.sort()
 
-    preview_folder_base = os.path.expanduser('~/tmp/und-ducks/preview')    
+    preview_folder_base = os.path.expanduser('~/tmp/und-ducks/patch-level-preview')    
     
     html_files = []
     
@@ -452,8 +554,8 @@ if False:
     # i_file = 0; image_level_results_file = image_level_results_filenames[i_file]
     for i_file,image_level_results_file in enumerate(image_level_results_filenames):
         
-        print('\Generating preview for file {} of {}'.format(
-            i_file,len(image_level_results_filenames)))
+        print('\Generating {} previews for file {} of {}'.format(
+            len(preview_confidence_thresholds),i_file,len(image_level_results_filenames)))
         
         if image_level_results_file in result_file_to_folder_base:
             image_folder_base = result_file_to_folder_base[image_level_results_file]        
@@ -477,106 +579,4 @@ if False:
     
     for fn in html_files:
         path_utils.open_file(fn)
-
-    
-    #%% Counting
-    
-    # TODO: this has not yet been ported from the USGS-goose script
-    
-    output_file = None
-    overwrite = True
-    counting_confidence_thresholds = None
-    drive_root_path = '/media/user/My Passport'
-    assert os.path.isdir(drive_root_path)
-    
-    image_level_results_base = os.path.expanduser('~/tmp/usgs-inference/image_level_results')
-    image_level_results_filenames = os.listdir(image_level_results_base)
-    image_level_results_filenames = [fn for fn in image_level_results_filenames if \
-                                     fn.endswith('.json')]
-    image_level_results_filenames = [fn for fn in image_level_results_filenames if 'nms' in fn]
-    
-    image_level_results_filenames.sort()
         
-    image_results_file_relative_to_prefix = {}
-    
-    confidence_threshold_sets = [0.5, 0.525, 0.55, 0.575, 0.6, 0.625, 0.65, 0.675]
-    
-    # E.g.: 'count_brant', 'count_other', 'count_gull', 'count_canada', 'count_emperor'
-    confidence_threshold_sets.append(
-        {'brant':0.65, 'other':0.65, 'gull':0.65, 'canada':0.625, 'emperor':0.6})
-    
-    # image_level_results_file_relative = image_level_results_filenames[0]
-    for image_level_results_file_relative in image_level_results_filenames:
-        
-        if image_level_results_file_relative in image_results_file_relative_to_prefix:
-            image_name_prefix = image_results_file_relative_to_prefix[image_level_results_file_relative]
-        elif 'eval' in image_level_results_file_relative:
-            image_name_prefix = '**eval**'
-        else:
-            # The prefix is everything between the universal root path, e.g.:
-            #
-            # /media/user/My Passport1'
-            # 
-            # ...and a particular image in a results file.  E.g. for the results file:
-            #
-            # media_user_My_Passport_2022-10-16_md_results_image_level_nms.json
-            # 
-            # ...in which filenames look like:
-            #
-            # CAM3/CAM30033.JPG
-            # 
-            # The prefix will be:
-            #
-            # 2022-10-12/
-            image_name_prefix = os.path.basename(image_level_results_file_relative).\
-                replace('My_Passport','My Passport').\
-                split('_')[3] + '/'
-            # assert image_name_prefix.startswith('2022') and len(image_name_prefix) == 11
-    
-        image_level_results_file = os.path.join(image_level_results_base,
-                                                image_level_results_file_relative)
-        
-        image_level_counting(image_level_results_file,
-                             image_name_prefix,
-                             drive_root_path,
-                             output_file=None,
-                             overwrite=True,
-                             counting_confidence_thresholds=confidence_threshold_sets)    
-
-    # ...for each results file
-
-    
-    #%% Zip results files                            
-    
-    image_level_results_base = os.path.expanduser('~/tmp/und-ducks/image_level_results/')
-    image_level_results_filenames = os.listdir(image_level_results_base)
-    image_level_results_filenames = [fn for fn in image_level_results_filenames if \
-                                     fn.endswith('.csv')]
-    image_level_results_filenames = [os.path.join(image_level_results_base,fn) for \
-                                     fn in image_level_results_filenames]
-
-    import zipfile
-    from zipfile import ZipFile
-
-    output_path = image_level_results_base
-
-    def zip_file(fn, overwrite=True):
-        
-        basename = os.path.basename(fn)
-        zip_file_name = os.path.join(output_path,basename + '.zip')
-        
-        if (not overwrite) and (os.path.isfile(zip_file_name)):
-            print('Skipping existing file {}'.format(zip_file_name))
-            return
-        
-        print('Zipping {} to {}'.format(fn,zip_file_name))
-        
-        with ZipFile(zip_file_name,'w',zipfile.ZIP_DEFLATED) as zipf:
-            zipf.write(fn,arcname=basename,compresslevel=9,compress_type=zipfile.ZIP_DEFLATED)
-
-    from multiprocessing.pool import ThreadPool
-    pool = ThreadPool(len(image_level_results_filenames))
-    with tqdm(total=len(image_level_results_filenames)) as pbar:
-        for i,_ in enumerate(pool.imap_unordered(zip_file,image_level_results_filenames)):
-            pbar.update()
-
