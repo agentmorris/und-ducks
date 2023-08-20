@@ -17,11 +17,9 @@
 #%% TODO
 
 """
-
-* When I first ran this, I was pretty careless with train/val splitting.  There's
-  probably not a perfect split given the small number of examples for some classes,
-  but I could make at least some effort to do a sensible split.
-  
+* Consider writing out some negative patches from positive images; there may
+  be a bias where we don't see, e.g. shorelines that birds don't tend to sit 
+  *right* on, but that don't appear in hard negative images.  
 """
 
 #%% Constants and imports
@@ -76,6 +74,7 @@ class_file_names = ['object.data','classes.txt']
 
 # This will store a mapping from patches back to the original images
 patch_metadata_file = 'patch_metadata.json'
+patch_metadata_file_positives_only = 'patch_metadata_positives_only.json'
 
 val_image_fraction = 0.15
 
@@ -84,10 +83,10 @@ val_image_fraction = 0.15
 # average number of patches per image.
 #
 # YOLOv5 recommends 0%-10% hard negatives.
-hard_negative_fraction = 0.0 # 0.1
+hard_negative_fraction = 0.05
 
-# The YOLO spec leaves it slightly ambiguous wrt whether empty annotation files are required/banned
-# for hard negatives
+# The YOLO spec leaves it slightly ambiguous wrt whether empty annotation files are 
+# required/banned for hard negatives
 write_empty_annotation_files_for_hard_negatives = True
 
 random.seed(0)
@@ -237,33 +236,36 @@ def get_patch_boundaries(image_size,patch_size,patch_stride=None):
 # ...def get_patch_boundaries()
 
 
-#%% Create YOLO-formatted patches (prep)
+def relative_path_to_image_name(rp):    
+    image_name = rp.lower().replace('/','_')
+    assert image_name.endswith('.jpg')
+    image_name = image_name.replace('.jpg','')
+    return image_name
+    
 
-# TODO: this is trivially parallelizable
+def patch_info_to_patch_name(image_name,patch_x_min,patch_y_min):
+    patch_name = image_name + '_' + str(patch_x_min).zfill(4) + '_' + str(patch_y_min).zfill(4)
+    return patch_name
+
+
+#%% Create YOLO-formatted patches (prep)
 
 # This will be a dict mapping patch names (YOLO files without the extension)
 # to metadata about their sources
-patch_metadata_mapping = {}
+patch_metadata = {}
 
 image_ids_with_annotations = []
 n_patches = 0
 n_boxes = 0
 n_clipped_boxes = 0
 n_excluded_boxes = 0
-
-def relative_path_to_image_name(rp):
-    
-    image_name = rp.lower().replace('/','_')
-    assert image_name.endswith('.jpg')
-    image_name = image_name.replace('.jpg','')
-    return image_name
-    
-def patch_info_to_patch_name(image_name,patch_x_min,patch_y_min):
-    patch_name = image_name + '_' + str(patch_x_min).zfill(4) + '_' + str(patch_y_min).zfill(4)
-    return patch_name
     
 
 #%% Create YOLO-formatted patches (main loop)
+
+# Takes about 10 minutes
+
+# TODO: This is trivially parallelizable
 
 # i_image = 1; im = d['images'][i_image]
 for i_image,im in tqdm(enumerate(d['images']),total=len(d['images'])):
@@ -344,6 +346,8 @@ for i_image,im in tqdm(enumerate(d['images']),total=len(d['images'])):
         
         # ...for each annotation
         
+        del ann
+        
         # Don't write out patches with no matching annotations
         if len(patch_boxes) == 0:
             continue
@@ -421,24 +425,25 @@ for i_image,im in tqdm(enumerate(d['images']),total=len(d['images'])):
             # ...if we're clipping boxes
             
             # YOLO annotations are category x_center y_center w h
-            yolo_box = [ann['category_id'],
+            yolo_box = [xywhc[4],
                         x_center_relative, y_center_relative, 
                         box_w_relative, box_h_relative]
             yolo_boxes_this_patch.append(yolo_box)
             
         # ...for each box
         
-        patch_metadata = {
+        this_patch_metadata = {
             'patch_name':patch_name,
             'original_image_id':im['id'],
             'patch_x_min':patch_x_min,
             'patch_y_min':patch_y_min,
             'patch_x_max':patch_x_max,
             'patch_y_max':patch_y_max,
-            'hard_negative':False
+            'hard_negative':False,
+            'patch_boxes':patch_boxes
             }
                     
-        patch_metadata_mapping[patch_name] = patch_metadata
+        patch_metadata[patch_name] = this_patch_metadata
         
         with open(patch_ann_fn,'w') as f:
             for yolo_box in yolo_boxes_this_patch:
@@ -462,48 +467,48 @@ n_images_with_annotations = len(image_ids_with_annotations)
 print('\nProcessed {} boxes ({} clipped) ({} excluded) from {} patches on {} images'.format(
     n_boxes,n_clipped_boxes,n_excluded_boxes,n_patches,n_images_with_annotations))
 
-annotated_image_ids = set([p['original_image_id'] for p in patch_metadata_mapping.values()])
+annotated_image_ids = set([p['original_image_id'] for p in patch_metadata.values()])
 assert len(annotated_image_ids) == n_images_with_annotations
 
+print('Wrote YOLO-formatted positive images to {}'.format(dest_image_folder))
+print('Wrote YOLO-formatted positive annotations to {}'.format(dest_txt_folder))
 
-#%% Write out class list and metadata mapping
 
-print('Generating class lists')
+#%% Write out patch metadata file before sampling hard negatives
 
-# Write the YOLO-formatted class file
-#
-# ...possibly more than once, to satisfy a couple of conventions on 
-# what it's supposed to be called.
-for class_file_name in class_file_names:
-    class_file_full_path = os.path.join(yolo_all_dir,class_file_name)
-    with open(class_file_full_path, 'w') as f:
-        print('Writing class list to {}'.format(class_file_full_path))
-        for i_class in range(0,len(category_id_to_name)):
-            # Category IDs should range from 0..N-1
-            assert i_class in category_id_to_name
-            f.write(category_id_to_name[i_class] + '\n')
+# This is not used later, it's only for debugging; we'll write the file out again,
+# even if hard negatives are disabled.
 
-patch_metadata_file_full_path = os.path.join(yolo_all_dir,patch_metadata_file)
-with open(patch_metadata_file_full_path,'w') as f:
-    json.dump(patch_metadata_mapping,f,indent=2)
-    
-md_category_mapping = {}
-for category_id in category_id_to_name:
-    md_category_mapping[str(category_id)] = category_id_to_name[category_id]
-with open(md_class_mapping_file,'w') as f:
-    json.dump(md_category_mapping,f,indent=1)
+patch_metadata_file_full_path_positives_only = \
+    os.path.join(yolo_all_dir,patch_metadata_file_positives_only)
+with open(patch_metadata_file_full_path_positives_only,'w') as f:
+    json.dump(patch_metadata,f,indent=1)
+
+print('Wrote patch metadata (positives only) to {}'.format(
+    patch_metadata_file_full_path_positives_only))
+
+# I really really really want to make sure I do a clean load in the next cell
+del patch_metadata
 
 
 #%% Sample hard negatives
 
+# This cell appends to patch_metadata_mapping, so it's not idempotent; force a clean
+# load before mucking with patch_metadata_mapping.
+with open(patch_metadata_file_full_path_positives_only,'r') as f:
+    patch_metadata = json.load(f)
+
 n_hard_negative_source_images = round(hard_negative_fraction*n_images_with_annotations)
 average_patches_per_image = n_patches / n_images_with_annotations
 
-candidate_hard_negatives = []
+candidate_hard_negatives = d['images_without_annotations']
 n_bypassed_candidates = 0
         
 hard_negative_source_images = random.sample(candidate_hard_negatives,
                                              k=n_hard_negative_source_images)
+
+n_patches_before_hard_negatives = len(patch_metadata)
+
 assert len(hard_negative_source_images) == len(set(hard_negative_source_images))
 
 # For each hard negative source image
@@ -537,6 +542,9 @@ for image_fn_relative in tqdm(hard_negative_source_images):
         patch_image_fn = os.path.join(dest_image_folder,patch_name + '.jpg')
         patch_ann_fn = os.path.join(dest_txt_folder,patch_name + '.txt')
         
+        assert not os.path.isfile(patch_image_fn)
+        assert not os.path.isfile(patch_ann_fn)
+        
         # Write out patch image
         patch_im.save(patch_image_fn,quality=patch_jpeg_quality)
         
@@ -548,39 +556,138 @@ for image_fn_relative in tqdm(hard_negative_source_images):
         
         # Add to patch metadata list
         patch_name = patch_info_to_patch_name(image_name,patch_x_min,patch_y_min)
-        assert patch_name not in patch_metadata_mapping
-        patch_metadata = {
+        assert patch_name not in patch_metadata
+        this_patch_metadata = {
             'patch_name':patch_name,
             'original_image_id':image_id,
             'patch_x_min':patch_x_min,
             'patch_y_min':patch_y_min,
             'patch_x_max':patch_x_max,
             'patch_y_max':patch_y_max,
-            'hard_negative':True
+            'hard_negative':True,
+            'patch_boxes':[]
             }
-        patch_metadata_mapping[patch_name] = patch_metadata
+        patch_metadata[patch_name] = this_patch_metadata
     
     # ...for each patch
 
 # ...for each hard negative image    
 
+n_patches_after_hard_negatives = len(patch_metadata)
 
-#%% Measure folder size
+print('\nTraining with {} patches ({} before hard negatives)'.format(
+    n_patches_after_hard_negatives,
+    n_patches_before_hard_negatives))
+
+
+#%% Do some consistency checking on our patch metadata
+
+if False:
+    k = next(iter(patch_metadata.keys()))
+    v = patch_metadata[k]; print(v)
+    
+n_patches_from_negative_images = 0
+n_patches_from_positive_images = 0
+
+n_positive_patches = 0
+n_negative_patches = 0
+
+for patch_name in patch_metadata.keys():
+    v = patch_metadata[patch_name]
+    
+    patch_image_fn = os.path.join(dest_image_folder,patch_name + '.jpg')
+    patch_ann_fn = os.path.join(dest_txt_folder,patch_name + '.txt')
+    
+    assert os.path.isfile(patch_image_fn)
+    assert os.path.isfile(patch_ann_fn)
+    
+    with open(patch_ann_fn,'r') as f:
+        patch_ann_lines = f.readlines()
+    
+    for s in patch_ann_lines:
+        assert len(s.strip().split(' ')) == 5
+    n_annotations_this_patch = len(patch_ann_lines)        
+        
+    if n_annotations_this_patch > 0:
+        n_positive_patches += 1
+    else:
+        n_negative_patches += 1
+        
+    assert v['patch_name'] == patch_name
+    if v['hard_negative']:
+        n_patches_from_negative_images += 1
+        assert n_annotations_this_patch == 0
+    else:
+        n_patches_from_positive_images += 1
+        
+print('Found {} patches from positive images'.format(n_patches_from_positive_images))
+print('Found {} patches from hard negative images'.format(n_patches_from_negative_images))
+
+print('Found {} positive patches'.format(n_positive_patches))
+print('Found {} negative patches'.format(n_negative_patches))
+
+# These are true because we chose not to write out any negative patches from 
+# positive images
+assert n_patches_from_positive_images == n_positive_patches
+assert n_patches_from_negative_images == n_negative_patches
+
+
+#%% Write out patch metadata file (for real this time)
+
+patch_metadata_file_full_path = os.path.join(yolo_all_dir,patch_metadata_file)
+with open(patch_metadata_file_full_path,'w') as f:
+    json.dump(patch_metadata,f,indent=1)
+    
+print('Wrote patch metadata to {}'.format(patch_metadata_file_full_path))    
+
+
+#%% Estimate output folder size
 
 import humanfriendly
 from pathlib import Path
 
-annotated_image_ids = set([p['original_image_id'] for p in patch_metadata_mapping.values()])
+image_ids = set([p['original_image_id'] for p in patch_metadata.values()])
 
 root_directory = Path(yolo_all_dir)
 output_size_bytes = sum(f.stat().st_size for f in root_directory.glob('**/*') if f.is_file())
 
 print('Output size for {} images is {}'.format(
-    len(annotated_image_ids),humanfriendly.format_size(output_size_bytes)))
+    len(image_ids),humanfriendly.format_size(output_size_bytes)))
 
-projected_size_bytes = (len(d['images']) / len(annotated_image_ids)) * output_size_bytes
+projected_size_bytes = (len(d['images']) / len(image_ids)) * output_size_bytes
 print('Projected size for all {} images is {}'.format(
     len(d['images']),humanfriendly.format_size(projected_size_bytes)))
+
+
+#%% Write out class list and category mapping
+
+# Write the YOLO-formatted class file
+#
+# ...possibly more than once, to satisfy a couple of conventions on 
+# what it's supposed to be called.
+for class_file_name in class_file_names:
+    class_file_full_path = os.path.join(yolo_all_dir,class_file_name)
+    with open(class_file_full_path, 'w') as f:
+        print('Writing class list to {}'.format(class_file_full_path))
+        for i_class in range(0,len(category_id_to_name)):
+            # Category IDs should range from 0..N-1
+            assert i_class in category_id_to_name
+            f.write(category_id_to_name[i_class] + '\n')
+
+md_category_mapping = {}
+for category_id in category_id_to_name:
+    md_category_mapping[str(category_id)] = category_id_to_name[category_id]
+with open(md_class_mapping_file,'w') as f:
+    json.dump(md_category_mapping,f,indent=1)
+
+print('Wrote MD class mapping to {}'.format(md_class_mapping_file))
+
+
+#%% Force a clean load
+
+del patch_metadata
+del annotated_image_ids
+del image_id_to_annotations
 
 
 #%% Split image IDs into train/val
@@ -600,9 +707,36 @@ all_image_ids = list(all_image_ids)
 
 n_val_image_ids = int(val_image_fraction*len(all_image_ids))
 
-# This call to random.seed() was added *after* the original train/val split.
 random.seed(0)
 val_image_ids = random.sample(all_image_ids,k=n_val_image_ids)
+
+
+#%% Look at the class balance
+
+val_image_ids_set = set(val_image_ids)
+
+category_id_to_n_boxes_train = defaultdict(int)
+category_id_to_n_boxes_val = defaultdict(int)
+category_id_to_n_boxes_all = defaultdict(int)
+
+# patch_name = next(iter(patch_metadata.keys()))
+for patch_name in patch_metadata.keys():
+    patch_info = patch_metadata[patch_name]
+    image_id = patch_info['original_image_id']
+    b_val_image = (image_id in val_image_ids_set)
+    for xywhc in patch_info['patch_boxes']:
+        assert len(xywhc) == 5
+        category_id = xywhc[4]
+        category_id_to_n_boxes_all[category_id] = category_id_to_n_boxes_all[category_id] + 1
+        assert category_id in category_id_to_name
+        if b_val_image:
+            category_id_to_n_boxes_val[category_id] = category_id_to_n_boxes_val[category_id] + 1
+        else:
+            category_id_to_n_boxes_train[category_id] = category_id_to_n_boxes_train[category_id] + 1
+
+for category_id in category_id_to_name:
+    assert category_id in category_id_to_n_boxes_val
+    assert category_id in category_id_to_n_boxes_train
 
 
 #%% Copy images to train/val folders

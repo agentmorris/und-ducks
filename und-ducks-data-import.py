@@ -8,7 +8,6 @@
 #
 ########
 
-
 #%% Imports and constants
 
 import os
@@ -385,6 +384,3 @@ if False:
                                                         image_base_dir=base_folder,
                                                         options=viz_options)
     open_file(html_output_file)
-    
-    
-    
