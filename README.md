@@ -40,6 +40,9 @@ These are listed in roughly the order in which you would use them.
 
 #### und-ducks-inference.py
 
+* Currently a stub, will merge with usgs-geese-inference.py the next time
+  I need to run inference with this model.
+
 * Run inference on a folder of images, which means, for each image:
 
     * Split the image into overlapping patches
@@ -49,7 +52,6 @@ These are listed in roughly the order in which you would use them.
 
 #### und-ducks-postprocessing.py
 
-* Do stuff with inference results:
+* Removed, will merge with usgs-geese-postprocessing the next time
+  I need to run inference with this model.
 
-    * Generate patch-level previews from image-level model results
-    * Generate estimated image-level bird counts from image-level model results
