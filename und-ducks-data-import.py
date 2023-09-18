@@ -6,6 +6,13 @@
 #
 # * Convert original annotations from Pascal VOC format to COCO Camera Traps
 #
+# The COCO Camera Traps file produced at the end of this script will include all images
+# that had an annotation file.  Some of the images with annotation files were empty, and
+# therefore have no annotations in the .json file.  As far as we know, *all* of the images
+# without annotation files are empty, so they don't have proper representation in the .json
+# file, but it will include a field called "images_without_annotations", which is just 
+# what it sounds like.
+#
 ########
 
 #%% Imports and constants
@@ -21,7 +28,8 @@ import xmltodict
 from md_utils import path_utils
 from md_visualization import visualization_utils as visutils
 
-base_folder = '/media/user/My Passport/2020_pair_surveys_UND_SFelege'
+base_folder = '/media/user/My Passport1/2020_pair_surveys_UND_SFelege'
+assert os.path.isdir(base_folder)
 
 annotation_path_root = '2020_pair_surveys'
 
@@ -29,6 +37,12 @@ output_json_file = os.path.expanduser('~/data/und-ducks.json')
 
 image_preview_folder = os.path.expanduser('~/tmp/und-ducks/preview')
 os.makedirs(image_preview_folder,exist_ok=True)
+
+from ct_utils import get_iou
+
+# IoU threshold for merging similar boxes when there are multiple annotation files
+# for an image
+iou_merge_threshold = 0.5
 
 
 #%% Enumerate files
@@ -132,17 +146,21 @@ for i_xml_file,xml_file in tqdm(enumerate(xml_files),total=len(xml_files)):
         
     # Do some normalization
     if 'object' not in annotation:
+        
         xml_files_with_empty_annotation_lists.append(xml_file)
         annotation['object'] = []
-
+        
     elif isinstance(annotation['object'],list):
+        
         assert len(annotation['object']) > 0
         
     else:
+        
         assert isinstance(annotation['object'],dict)
         annotation['object'] = [annotation['object']]
     
     for ann in annotation['object']:
+        
         assert ann['truncated'] in ('0','1')
         assert ann['difficult'] == '0'
         assert ann['pose'].lower() == 'unspecified'
@@ -152,9 +170,10 @@ for i_xml_file,xml_file in tqdm(enumerate(xml_files),total=len(xml_files)):
 
     all_annotations.extend(annotation['object'])
     
+    # If this image is annotated twice...
     if image_path_relative in image_to_annotations:
         
-        print('Warning: multiple annotations for {}:'.format(image_path_relative))
+        # print('Warning: multiple annotations for {}:'.format(image_path_relative))
         old_annotation = image_to_annotations[image_path_relative]
         print(old_annotation['xml_file'])
         print(old_annotation['object'])        
@@ -165,9 +184,50 @@ for i_xml_file,xml_file in tqdm(enumerate(xml_files),total=len(xml_files)):
         if image_path_relative not in images_with_multiple_xml_files:
             images_with_multiple_xml_files[image_path_relative] = [old_annotation['xml_file']]
         images_with_multiple_xml_files[image_path_relative].append(xml_file)
+                
+        multiple_xml_handling = 'smart-merge' # 'merge','smart-merge','use-larger'
         
-        # assert len(old_annotation['object']) == len(annotation['object'])
+        # Keep whichever is larger...
+        if multiple_xml_handling == 'use-larger':
+            if len(annotation['object']) > len(old_annotation['object']):
+                image_to_annotations[image_path_relative] = annotation
+        
+        # Keep them all...
+        elif multiple_xml_handling == 'merge':
+            image_to_annotations[image_path_relative]['object'].extend(annotation['object'])
+        
+        # Try to keep only unique annotations        
+        elif multiple_xml_handling == 'smart-merge':
+                    
+            old_boxes = image_to_annotations[image_path_relative]['object']
+            boxes_to_append = []
+            # box = annotation['object'][0]
+            for box in annotation['object']:                
+                
+                b0 = box['bndbox']
+                b0 = [int(b0['xmin']),int(b0['ymin']),
+                       int(b0['xmax'])-int(b0['xmin']),int(b0['ymax'])-int(b0['ymin'])]                
+                
+                matches_existing_box = False
+                
+                for old_box in old_boxes:                                        
+                    b1 = old_box['bndbox']
+                    b1 = [int(b1['xmin']),int(b1['ymin']),
+                           int(b1['xmax'])-int(b1['xmin']),int(b1['ymax'])-int(b1['ymin'])]
+                    iou = get_iou(b0,b1)
+                    if iou >= iou_merge_threshold:
+                        matches_existing_box = True
+                        break
+                
+                if not matches_existing_box:                    
+                    boxes_to_append.append(box)
+                    
+            for box_to_append in boxes_to_append:
+                image_to_annotations[image_path_relative]['object'].append(box_to_append)                
+                
+            
     else:
+        
         image_to_annotations[image_path_relative] = annotation
 
 # ...for each annotation file
@@ -183,7 +243,11 @@ for fn in image_files:
 print('\n{} of {} images have no annotations'.format(
     len(images_without_annotations),
     len(image_files)))
-        
+
+print('\n{} of {} annotated images have multiple annotation files'.format(
+    len(images_with_multiple_xml_files),
+    len(image_to_annotations)))
+
 print('Found a total of {} annotations in {} files'.format(len(all_annotations),
                                                            len(image_to_annotations)))
 
@@ -263,8 +327,8 @@ images = list(image_id_to_image.values())
 print('\nParsed {} annotations for {} images'.format(len(annotations),len(images)))
 
 info = {}
-info['version'] = '2023.03.10.00'
-info['description'] = 'USGS brant survey data'
+info['version'] = '2023.09.14'
+info['description'] = 'UND duck survey data'
 
 categories = []
 for category_name in category_name_to_category_id:
@@ -303,7 +367,7 @@ if False:
     for ann in d['annotations']:
         image_id_to_annotations[ann['image_id']].append(ann)
     
-    i_image = 100
+    i_image = 1000
     im = d['images'][i_image]
     annotations = image_id_to_annotations[im['id']]
     print('Found {} annotations for this image'.format(len(annotations)))
@@ -329,6 +393,9 @@ if False:
     
     #%% Check DB integrity
     
+    json_source = output_json_file
+    # json_source = os.path.expanduser('~/data/und-ducks/und-ducks-binary/und-ducks-binary.json')
+    
     from data_management.databases import integrity_check_json_db
     
     options = integrity_check_json_db.IntegrityCheckOptions()
@@ -338,32 +405,32 @@ if False:
     options.bFindUnusedImages = False
     options.bRequireLocation = False
     
-    sorted_categories, _, _= integrity_check_json_db.integrity_check_json_db(output_json_file, options)
+    sorted_categories, _, _= integrity_check_json_db.integrity_check_json_db(json_source, options)
     
     """
-    [{'id': 6, 'name': 'other_waterfowl', '_count': 807},
+    [{'id': 6, 'name': 'other_waterfowl', '_count': 876},
      {'id': 5, 'name': 'blue_winged_teal', '_count': 622},
-     {'id': 0, 'name': 'unknown', '_count': 543},
-     {'id': 2, 'name': 'northern_shoveler', '_count': 503},
-     {'id': 3, 'name': 'american_coot', '_count': 409},
-     {'id': 4, 'name': 'mallard', '_count': 103},
-     {'id': 10, 'name': 'gadwall', '_count': 98},
-     {'id': 8, 'name': 'lesser_scaup', '_count': 70},
-     {'id': 12, 'name': 'red_winged_blackbird', '_count': 30},
-     {'id': 14, 'name': 'yellow_headed_blackbird', '_count': 30},
+     {'id': 0, 'name': 'unknown', '_count': 561},
+     {'id': 2, 'name': 'northern_shoveler', '_count': 502},
+     {'id': 3, 'name': 'american_coot', '_count': 411},
+     {'id': 4, 'name': 'mallard', '_count': 101},
+     {'id': 10, 'name': 'gadwall', '_count': 73},
+     {'id': 8, 'name': 'lesser_scaup', '_count': 33},
+     {'id': 12, 'name': 'red_winged_blackbird', '_count': 31},
+     {'id': 14, 'name': 'yellow_headed_blackbird', '_count': 31},
      {'id': 1, 'name': 'other_songbird', '_count': 25},
      {'id': 11, 'name': 'northern_pintail', '_count': 21},
-     {'id': 18, 'name': 'american_wigeon', '_count': 18},
      {'id': 15, 'name': 'common_grackle', '_count': 14},
-     {'id': 17, 'name': 'ruddy_duck', '_count': 14},
      {'id': 9, 'name': 'redhead', '_count': 13},
-     {'id': 7, 'name': 'pied_billed_grebe', '_count': 11},
-     {'id': 13, 'name': 'canada_goose', '_count': 10},
-     {'id': 20, 'name': 'green_winged_teal', '_count': 7},
+     {'id': 17, 'name': 'ruddy_duck', '_count': 12},
+     {'id': 18, 'name': 'american_wigeon', '_count': 12},
+     {'id': 13, 'name': 'canada_goose', '_count': 11},
+     {'id': 7, 'name': 'pied_billed_grebe', '_count': 10},
      {'id': 16, 'name': 'canvasback', '_count': 3},
-     {'id': 19, 'name': 'horned_grebe', '_count': 2},
-     {'id': 21, 'name': 'other_waterbird', '_count': 1}]
+     {'id': 20, 'name': 'green_winged_teal', '_count': 3},
+     {'id': 19, 'name': 'horned_grebe', '_count': 2}]
     """
+    ''
     
     
     #%% Preview some images
@@ -372,14 +439,15 @@ if False:
     from md_utils.path_utils import open_file
     
     viz_options = visualize_db.DbVizOptions()
-    viz_options.num_to_visualize = 20
+    viz_options.num_to_visualize = None
     viz_options.trim_to_images_with_bboxes = True
     viz_options.add_search_links = False
     viz_options.sort_by_filename = False
     viz_options.parallelize_rendering = True
     viz_options.include_filename_links = True
+    viz_options.viz_size = (1280,-1)
     
-    html_output_file, _ = visualize_db.process_images(db_path=output_json_file,
+    html_output_file, _ = visualize_db.process_images(db_path=json_source,
                                                         output_dir=image_preview_folder,
                                                         image_base_dir=base_folder,
                                                         options=viz_options)

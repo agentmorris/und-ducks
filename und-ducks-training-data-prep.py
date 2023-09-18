@@ -14,14 +14,6 @@
 #
 ########
 
-#%% TODO
-
-"""
-* Consider writing out some negative patches from positive images; there may
-  be a bias where we don't see, e.g. shorelines that birds don't tend to sit 
-  *right* on, but that don't appear in hard negative images.  
-"""
-
 #%% Constants and imports
 
 import os
@@ -33,23 +25,32 @@ from collections import defaultdict
 from tqdm import tqdm
 
 from md_visualization import visualization_utils as visutils
+from md_utils.path_utils import safe_create_link
+from detection.run_tiled_inference import get_patch_boundaries, patch_info_to_patch_name
 
 input_annotations_file = os.path.expanduser('~/data/und-ducks.json')
-input_image_folder = '/media/user/My Passport/2020_pair_surveys_UND_SFelege'
+input_image_folder = '/media/user/My Passport1/2020_pair_surveys_UND_SFelege'
+assert os.path.isdir(input_image_folder)
 
 debug_max_image = -1
 
+class_mapping_type = 'multiclass' # 'binary' or 'multiclass'
+model_tag = 'yolov5'
+
 if debug_max_image < 0:
-    output_dir = os.path.expanduser('~/data/und-ducks')
+    output_dir = os.path.expanduser('~/data/und-ducks/und-ducks-{}-{}'.format(class_mapping_type,model_tag))
 else:
-    output_dir = os.path.expanduser('~/data/und-ducks-mini-{}'.format(debug_max_image))
+    output_dir = os.path.expanduser('~/data/und-ducks-mini-{}/und-ducks-{}-{}'.format(
+        debug_max_image,class_mapping_type,model_tag))
+
+class_mapped_json = os.path.join(output_dir,'und-ducks-{}.json'.format(class_mapping_type))
 
 # This will contain *all* yolo-formatted patches
 yolo_all_dir = os.path.join(output_dir,'yolo_all')
 yolo_dataset_file = os.path.join(output_dir,'dataset.yaml')
 
 # This file will be compatible with the MegaDetector repo's inference scripts
-md_class_mapping_file = os.path.join(output_dir,'und-ducks-md-class-mapping.json')
+md_class_mapping_file = os.path.join(output_dir,'und-ducks-md-class-mapping-{}.json'.format(class_mapping_type))
 
 # Just the train/val subsets
 yolo_train_dir = os.path.join(output_dir,'yolo_train')
@@ -59,8 +60,7 @@ train_images_list_file = os.path.join(output_dir,'train_images.json')
 val_images_list_file = os.path.join(output_dir,'val_images.json')
 
 patch_size = [1280,1280]
-
-default_patch_overlap = 0.1
+patch_stride = 0.9
 
 # Should we clip boxes to image boundaries, even if we know the object extends
 # into an adjacent image?
@@ -78,12 +78,15 @@ patch_metadata_file_positives_only = 'patch_metadata_positives_only.json'
 
 val_image_fraction = 0.15
 
+# Randomly sample a subset of negative patches (separate from sampling hard negatives)
+p_use_empty_patch = 0
+
 # If we have N images with annotations, we will choose hard_negative_fraction * N
 # hard negatives, and from each of those we'll choose a number of patches equal to the
 # average number of patches per image.
 #
 # YOLOv5 recommends 0%-10% hard negatives.
-hard_negative_fraction = 0.05
+hard_negative_fraction = 0.2
 
 # The YOLO spec leaves it slightly ambiguous wrt whether empty annotation files are 
 # required/banned for hard negatives
@@ -132,9 +135,9 @@ os.makedirs(dest_txt_folder,exist_ok=True)
 with open(input_annotations_file,'r') as f:
     d = json.load(f)
     
-image_id_to_annotations = defaultdict(list)
+source_image_id_to_annotations = defaultdict(list)
 for ann in d['annotations']:
-    image_id_to_annotations[ann['image_id']].append(ann)
+    source_image_id_to_annotations[ann['image_id']].append(ann)
 
 print('Read {} annotations for {} images'.format(
     len(d['annotations']),len(d['images'])))
@@ -144,16 +147,110 @@ print('Read {} annotations for {} images'.format(
 assert 'images_without_annotations' in d
 print('Read a list of {} images without annotations'.format(len(d['images_without_annotations'])))
 
-category_id_to_name = {c['id']:c['name'] for c in d['categories']}
-category_name_to_id = {c['name']:c['id'] for c in d['categories']}
-category_ids_to_exclude = []
+source_category_id_to_name = {c['id']:c['name'] for c in d['categories']}
+source_category_name_to_id = {c['name']:c['id'] for c in d['categories']}
+source_category_ids_to_exclude = []
 for s in category_names_to_exclude:
-    if s in category_name_to_id:
-        category_ids_to_exclude.append(category_name_to_id[s])
+    if s in source_category_name_to_id:
+        source_category_ids_to_exclude.append(source_category_name_to_id[s])
     else:
         print("Warning: I'm supposed to ignore category {}, but this .json file doesn't"
               "have that category".format(s))
     
+
+#%% Re-map categories based on the model type
+
+def invert_dict(d,verify_uniqueness=True):
+    
+    if verify_uniqueness:
+        values = set()
+        for k in d.keys():
+            v = d[k]
+            assert v not in values, 'Attempting to invert a non-invertible dict'
+            values.add(v)
+            
+    return {v: k for k, v in d.items()}
+    
+assert class_mapping_type in ('binary','multiclass')
+
+multiclass_mapping = {
+    'other_songbird':'other_songbird',
+    'northern_shoveler':'northern_shoveler',
+    'american_coot':'american_coot',
+    'mallard':'mallard',
+    'blue_winged_teal':'blue_winged_teal',
+    'other_waterfowl':'other_waterfowl',
+    'pied_billed_grebe':'other_waterfowl',
+    'lesser_scaup':'lesser_scaup',
+    'redhead':'other_waterfowl',
+    'gadwall':'gadwall',
+    'northern_pintail':'other_waterfowl',
+    'red_winged_blackbird':'other_songbird',
+    'canada_goose':'canada_goose',
+    'yellow_headed_blackbird':'other_songbird',
+    'common_grackle':'other_songbird',
+    'canvasback':'other_waterfowl',
+    'ruddy_duck':'other_waterfowl',
+    'american_wigeon':'other_waterfowl',
+    'horned_grebe':'other_waterfowl',
+    'green_winged_teal':'other_waterfowl',
+    'other_waterbird':'other_waterfowl',
+    'unknown':'unknown'
+    }
+
+if class_mapping_type == 'binary':
+    
+    category_id_to_name = {0:'bird'}
+    category_name_to_id = invert_dict(category_id_to_name)
+    source_category_to_output_category = {}
+    for source_id in source_category_id_to_name:
+        source_category_to_output_category[source_id] = 0
+    
+else:
+    
+    assert class_mapping_type == 'multiclass'    
+    category_name_to_id = {}
+    source_category_to_output_category = {}
+    
+    next_category_id = 0
+    
+    for source_id in source_category_id_to_name:
+        source_name = source_category_id_to_name[source_id]
+        output_name = multiclass_mapping[source_name]
+        if output_name not in category_name_to_id:
+            category_name_to_id[output_name] = next_category_id
+            next_category_id += 1
+        source_category_to_output_category[source_id] = category_name_to_id[output_name]
+                    
+    category_id_to_name = invert_dict(category_name_to_id)
+        
+# Re-map annotations
+
+# Re-read so this cell is idempotent
+with open(input_annotations_file,'r') as f:
+    d = json.load(f)
+
+# ann = d['annotations'][0]
+for ann in d['annotations']:
+    ann['category_id'] = source_category_to_output_category[ann['category_id']]
+    
+categories = []
+for category_name in category_name_to_id:
+    categories.append({'id':category_name_to_id[category_name],'name':category_name})
+d['categories'] = categories
+
+# Write the updated .json out
+with open(class_mapped_json,'w') as f:
+    json.dump(d,f,indent=1)
+    
+image_id_to_annotations = defaultdict(list)    
+for ann in d['annotations']:
+    image_id_to_annotations[ann['image_id']].append(ann)
+
+category_ids_to_exclude = []
+for source_id in source_category_ids_to_exclude:
+    category_ids_to_exclude.append(source_category_to_output_category[source_id])
+
 
 #%% Verify image ID uniqueness
 
@@ -165,77 +262,6 @@ for im in d['images']:
 
 #%% Support functions
 
-def get_patch_boundaries(image_size,patch_size,patch_stride=None):
-    """
-    Get a list of patch starting coordinates (x,y) given an image size
-    and a stride.  Stride defaults to half the patch size.
-    """
-    
-    if patch_stride is None:
-        patch_stride = (round(patch_size[0]*(1.0-default_patch_overlap)),
-                        round(patch_size[1]*(1.0-default_patch_overlap)))
-        
-    image_width = image_size[0]
-    image_height = image_size[1]
-        
-    def add_patch_row(patch_start_positions,y_start):
-        """
-        Add one row to our list of patch start positions, i.e.
-        loop over all columns.
-        """
-        
-        x_start = 0; x_end = x_start + patch_size[0] - 1
-        
-        while(True):
-            
-            patch_start_positions.append([x_start,y_start])
-            
-            x_start += patch_stride[0]
-            x_end = x_start + patch_size[0] - 1
-             
-            if x_end == image_width - 1:
-                break
-            elif x_end > (image_width - 1):
-                overshoot = (x_end - image_width) + 1
-                x_start -= overshoot
-                x_end = x_start + patch_size[0] - 1
-                patch_start_positions.append([x_start,y_start])
-                break
-        
-        # ...for each column
-        
-        return patch_start_positions
-        
-    patch_start_positions = []
-    
-    y_start = 0; y_end = y_start + patch_size[1] - 1
-        
-    while(True):
-    
-        patch_start_positions = add_patch_row(patch_start_positions,y_start)
-        
-        y_start += patch_stride[1]
-        y_end = y_start + patch_size[1] - 1
-        
-        if y_end == image_height - 1:
-            break
-        elif y_end > (image_height - 1):
-            overshoot = (y_end - image_height) + 1
-            y_start -= overshoot
-            y_end = y_start + patch_size[1] - 1
-            patch_start_positions = add_patch_row(patch_start_positions,y_start)
-            break
-    
-    # ...for each row
-    
-    assert patch_start_positions[-1][0]+patch_size[0] == image_width
-    assert patch_start_positions[-1][1]+patch_size[1] == image_height
-    
-    return patch_start_positions
-
-# ...def get_patch_boundaries()
-
-
 def relative_path_to_image_name(rp):    
     image_name = rp.lower().replace('/','_')
     assert image_name.endswith('.jpg')
@@ -243,12 +269,13 @@ def relative_path_to_image_name(rp):
     return image_name
     
 
-def patch_info_to_patch_name(image_name,patch_x_min,patch_y_min):
-    patch_name = image_name + '_' + str(patch_x_min).zfill(4) + '_' + str(patch_y_min).zfill(4)
-    return patch_name
+#%% Create YOLO-formatted patches
 
+# Takes about 10 minutes
+#
+# TODO: This is trivially parallelizable
 
-#%% Create YOLO-formatted patches (prep)
+## Create YOLO-formatted patches (prep)
 
 # This will be a dict mapping patch names (YOLO files without the extension)
 # to metadata about their sources
@@ -261,11 +288,9 @@ n_clipped_boxes = 0
 n_excluded_boxes = 0
     
 
-#%% Create YOLO-formatted patches (main loop)
+## Create YOLO-formatted patches (main loop)
 
-# Takes about 10 minutes
-
-# TODO: This is trivially parallelizable
+random.seed(0)
 
 # i_image = 1; im = d['images'][i_image]
 for i_image,im in tqdm(enumerate(d['images']),total=len(d['images'])):
@@ -293,7 +318,7 @@ for i_image,im in tqdm(enumerate(d['images']),total=len(d['images'])):
     
     n_patches_this_image = 0
     
-    patch_start_positions = get_patch_boundaries(pil_im.size,patch_size)
+    patch_start_positions = get_patch_boundaries(pil_im.size,patch_size,patch_stride)
     
     # i_patch = 0; patch_xy = patch_start_positions[i_patch]
     for i_patch,patch_xy in enumerate(patch_start_positions):
@@ -348,9 +373,17 @@ for i_image,im in tqdm(enumerate(d['images']),total=len(d['images'])):
         
         del ann
         
-        # Don't write out patches with no matching annotations
+        # If we have no annotations that overlap this patch...
         if len(patch_boxes) == 0:
-            continue
+            
+            # We used to skip all patches with no boxes...
+            # continue
+        
+            # ...but now we can randomly sample a subset of empty patches
+            r = random.random()
+            assert r >= 0.0 and r <= 1.0
+            if r >= p_use_empty_patch:
+                continue
         
         n_patches_this_image += 1
         
@@ -441,7 +474,7 @@ for i_image,im in tqdm(enumerate(d['images']),total=len(d['images'])):
             'patch_y_max':patch_y_max,
             'hard_negative':False,
             'patch_boxes':patch_boxes
-            }
+        }
                     
         patch_metadata[patch_name] = this_patch_metadata
         
@@ -473,11 +506,12 @@ assert len(annotated_image_ids) == n_images_with_annotations
 print('Wrote YOLO-formatted positive images to {}'.format(dest_image_folder))
 print('Wrote YOLO-formatted positive annotations to {}'.format(dest_txt_folder))
 
+del pil_im
+
 
 #%% Write out patch metadata file before sampling hard negatives
 
-# This is not used later, it's only for debugging; we'll write the file out again,
-# even if hard negatives are disabled.
+# This is not used later, it's only for debugging
 
 patch_metadata_file_full_path_positives_only = \
     os.path.join(yolo_all_dir,patch_metadata_file_positives_only)
@@ -492,6 +526,8 @@ del patch_metadata
 
 
 #%% Sample hard negatives
+
+random.seed(0)
 
 # This cell appends to patch_metadata_mapping, so it's not idempotent; force a clean
 # load before mucking with patch_metadata_mapping.
@@ -516,6 +552,9 @@ assert len(hard_negative_source_images) == len(set(hard_negative_source_images))
 # image_fn_relative = hard_negative_source_images[0]
 for image_fn_relative in tqdm(hard_negative_source_images):
     
+    image_fn_abs = os.path.join(input_image_folder,image_fn_relative)
+    pil_im = visutils.open_image(image_fn_abs)
+        
     image_id = image_fn_relative.replace('/','_')
     assert image_id not in annotated_image_ids
     
@@ -582,17 +621,18 @@ print('\nTraining with {} patches ({} before hard negatives)'.format(
 
 #%% Do some consistency checking on our patch metadata
 
-if False:
-    k = next(iter(patch_metadata.keys()))
-    v = patch_metadata[k]; print(v)
-    
 n_patches_from_negative_images = 0
 n_patches_from_positive_images = 0
 
 n_positive_patches = 0
 n_negative_patches = 0
 
+n_negative_patches_from_positive_images = 0
+
+positive_image_ids = set()
+
 for patch_name in patch_metadata.keys():
+    
     v = patch_metadata[patch_name]
     
     patch_image_fn = os.path.join(dest_image_folder,patch_name + '.jpg')
@@ -607,29 +647,36 @@ for patch_name in patch_metadata.keys():
     for s in patch_ann_lines:
         assert len(s.strip().split(' ')) == 5
     n_annotations_this_patch = len(patch_ann_lines)        
+    assert n_annotations_this_patch == len(v['patch_boxes'])
         
     if n_annotations_this_patch > 0:
         n_positive_patches += 1
+        positive_image_ids.add(v['original_image_id'])
     else:
         n_negative_patches += 1
         
     assert v['patch_name'] == patch_name
     if v['hard_negative']:
         n_patches_from_negative_images += 1
-        assert n_annotations_this_patch == 0
+        assert n_annotations_this_patch == 0        
     else:
         n_patches_from_positive_images += 1
-        
-print('Found {} patches from positive images'.format(n_patches_from_positive_images))
-print('Found {} patches from hard negative images'.format(n_patches_from_negative_images))
+        if n_annotations_this_patch == 0:
+            n_negative_patches_from_positive_images += 1
 
+# ...for each patch
+
+print('Found {} patches from {} positive images'.format(
+    n_patches_from_positive_images,len(positive_image_ids)))
 print('Found {} positive patches'.format(n_positive_patches))
-print('Found {} negative patches'.format(n_negative_patches))
 
-# These are true because we chose not to write out any negative patches from 
-# positive images
-assert n_patches_from_positive_images == n_positive_patches
-assert n_patches_from_negative_images == n_negative_patches
+print('Found {} negative patches total'.format(n_negative_patches))
+print('Found {} patches from hard negative images'.format(n_patches_from_negative_images))
+print('Found {} negative patches from positive images'.format(n_negative_patches_from_positive_images))
+
+if p_use_empty_patch <= 0:
+    assert n_patches_from_positive_images == n_positive_patches
+    assert n_patches_from_negative_images == n_negative_patches
 
 
 #%% Write out patch metadata file (for real this time)
@@ -639,24 +686,6 @@ with open(patch_metadata_file_full_path,'w') as f:
     json.dump(patch_metadata,f,indent=1)
     
 print('Wrote patch metadata to {}'.format(patch_metadata_file_full_path))    
-
-
-#%% Estimate output folder size
-
-import humanfriendly
-from pathlib import Path
-
-image_ids = set([p['original_image_id'] for p in patch_metadata.values()])
-
-root_directory = Path(yolo_all_dir)
-output_size_bytes = sum(f.stat().st_size for f in root_directory.glob('**/*') if f.is_file())
-
-print('Output size for {} images is {}'.format(
-    len(image_ids),humanfriendly.format_size(output_size_bytes)))
-
-projected_size_bytes = (len(d['images']) / len(image_ids)) * output_size_bytes
-print('Projected size for all {} images is {}'.format(
-    len(d['images']),humanfriendly.format_size(projected_size_bytes)))
 
 
 #%% Write out class list and category mapping
@@ -690,11 +719,120 @@ del annotated_image_ids
 del image_id_to_annotations
 
 
-#%% Split image IDs into train/val
+#%% Load patch metadata
 
 patch_metadata_file_full_path = os.path.join(yolo_all_dir,patch_metadata_file)
 with open(patch_metadata_file_full_path,'r') as f:
     patch_metadata = json.load(f)
+
+
+#%% Look at the number of images each category appears in
+
+category_id_to_images = defaultdict(set)
+
+for patch_name in patch_metadata.keys():
+    
+    patch_info = patch_metadata[patch_name]
+    if patch_info['hard_negative']:
+        continue    
+    for patch_box in patch_info['patch_boxes']:
+        category_id = patch_box[4]
+        category_id_to_images[category_id].add(patch_info['original_image_id'])
+        
+    # ...for each box
+    
+# ...for each patch    
+
+for category_id in category_id_to_name:
+    print('{} ({}): {}'.format(
+        category_id, category_id_to_name[category_id],len(category_id_to_images[category_id])))
+
+
+#%% Split image IDs into train/val (iterate over random seeds)
+
+import numpy as np
+
+all_image_ids = set()
+image_id_to_categories = defaultdict(set)
+for patch_name in patch_metadata.keys():
+    patch_info = patch_metadata[patch_name]
+    image_id = patch_info['original_image_id']
+    all_image_ids.add(image_id)
+    for box in patch_info['patch_boxes']:
+        category_id = box[-1]
+        image_id_to_categories[image_id].add(category_id)
+    
+print('Found {} unique image IDs for {} patches'.format(
+    len(all_image_ids),len(patch_metadata)))
+
+all_image_ids = list(all_image_ids)
+n_val_image_ids = int(val_image_fraction*len(all_image_ids))
+
+category_to_image_id = defaultdict(set)
+for image_id in image_id_to_categories:
+    for category_id in image_id_to_categories[image_id]:
+        category_to_image_id[category_id].add(image_id)
+
+max_random_seed = 1000
+
+random_seed_to_worst_error = {}
+random_seed_to_average_error = {}
+
+# random_seed = 0
+for random_seed in range(0,max_random_seed):
+    
+    # Randomly split into train/val
+    random.seed(random_seed)
+    val_image_ids = random.sample(all_image_ids,k=n_val_image_ids)
+    val_image_ids_set = set(val_image_ids)
+    
+    # For each category, measure the % of images that went into the val set
+    category_to_val_fraction = defaultdict(float)
+    
+    for category_id in category_to_image_id:
+        category_images = category_to_image_id[category_id]
+        n_category_images = len(category_images)
+        n_category_val_images = 0
+        for image_id in category_images:
+            if image_id in val_image_ids_set:
+                n_category_val_images += 1
+        category_val_fraction = n_category_val_images / n_category_images
+        category_to_val_fraction[category_id] = category_val_fraction
+            
+    # What's the furthest any category is from the target val fraction?
+    category_errors = []
+    for category_val_fraction in category_to_val_fraction.values():
+        category_error = abs(category_val_fraction-val_image_fraction)
+        category_errors.append(category_error)
+    
+    worst_error = max(category_errors)
+    average_error = np.mean(category_errors)
+        
+    random_seed_to_worst_error[random_seed] = worst_error
+    random_seed_to_average_error[random_seed] = average_error
+
+random_seed_to_error_metric = {}
+for r in random_seed_to_worst_error.keys():
+    random_seed_to_error_metric[r] = \
+        random_seed_to_worst_error[r] * random_seed_to_average_error[r]
+
+min_error = None
+min_error_seed = None
+
+for r in random_seed_to_error_metric.keys():
+    error_metric = random_seed_to_error_metric[r]
+    if min_error is None or error_metric < min_error:
+        min_error = error_metric
+        min_error_seed = r
+        
+
+#%% Split image IDs into train/val (single random seed)
+
+# We used 0 for the binary mapping in the general sense of defaultness, and 
+# hard-coded the random seed for the multi-class mapping to make sure every class
+# appears in both train and val.
+class_mapping_type_to_random_seed = {'binary':0,'multiclass':min_error_seed}
+random.seed(class_mapping_type_to_random_seed[class_mapping_type])
 
 all_image_ids = set()
 for patch_name in patch_metadata.keys():
@@ -707,13 +845,16 @@ all_image_ids = list(all_image_ids)
 
 n_val_image_ids = int(val_image_fraction*len(all_image_ids))
 
-random.seed(0)
 val_image_ids = random.sample(all_image_ids,k=n_val_image_ids)
+val_image_ids_set = set(val_image_ids)
+
+train_image_ids = []
+for image_id in all_image_ids:
+    if image_id not in val_image_ids_set:
+        train_image_ids.append(image_id)
 
 
 #%% Look at the class balance
-
-val_image_ids_set = set(val_image_ids)
 
 category_id_to_n_boxes_train = defaultdict(int)
 category_id_to_n_boxes_val = defaultdict(int)
@@ -734,9 +875,17 @@ for patch_name in patch_metadata.keys():
         else:
             category_id_to_n_boxes_train[category_id] = category_id_to_n_boxes_train[category_id] + 1
 
+print('Training data:\n')
+for category_id in category_id_to_n_boxes_all:
+    category_name = category_id_to_name[category_id]
+    n_boxes_train = category_id_to_n_boxes_train[category_id]
+    n_boxes_val = category_id_to_n_boxes_val[category_id]
+    print('Category {} ({}): {} train, {} val'.format(
+        category_id,category_name,n_boxes_train,n_boxes_val))
+
 for category_id in category_id_to_name:
-    assert category_id in category_id_to_n_boxes_val
-    assert category_id in category_id_to_n_boxes_train
+    assert category_id_to_n_boxes_val[category_id] > 0
+    assert category_id_to_n_boxes_train[category_id] > 0    
 
 
 #%% Copy images to train/val folders
@@ -780,10 +929,10 @@ print('\nCopied {} train patches, {} val patches'.format(
 #%% Save train/val splits
 
 with open(train_images_list_file,'w') as f:
-    json.dump(train_patch_names,f,indent=1)
+    json.dump(train_image_ids,f,indent=1)
 
 with open(val_images_list_file,'w') as f:
-    json.dump(val_patch_names,f,indent=1)          
+    json.dump(val_image_ids,f,indent=1)          
           
 
 #%% Generate the YOLO training dataset file
@@ -817,12 +966,6 @@ with open(yolo_dataset_file,'w') as f:
 #%% Prepare simlinks for BoundingBoxEditor
 
 # ...so it can appear that images and labels are in separate folders
-
-def safe_create_link(link_exists,link_new):
-    
-    if not os.path.exists(link_new):
-        os.symlink(link_exists,link_new)
-
 
 def create_virtual_yolo_dirs(yolo_base_dir):
     
@@ -875,13 +1018,18 @@ from md_visualization import visualize_db
 
 options = visualize_db.DbVizOptions()
 
-options.num_to_visualize = 200
+options.num_to_visualize = None
 
 # Target size for rendering; set either dimension to -1 to preserve aspect ratio
-options.viz_size = (800, -1)
+options.viz_size = (700, -1)
 options.include_filename_links = True
 
+preview_folder = os.path.join(output_dir,'patch_preview')
+
 _ = visualize_db.process_images(db_path=coco_patch_file,
-                            output_dir=os.path.join(output_dir,'patch_preview'),
+                            output_dir=preview_folder,
                             image_base_dir=yolo_all_dir,
                             options=options)
+
+from md_utils.path_utils import open_file
+open_file(preview_folder + '/index.html')

@@ -2,7 +2,7 @@
 
 ### Overview
 
-The code in this repo trains and evaluates models to detect ducks and other waterfowl in aerial images, based on a dataset provided by the [Felege Wildlife Lab](https://arts-sciences.und.edu/academics/biology/susan-felege/).
+The code in this repo trains and evaluates models to detect ducks and other waterfowl in drone images, based on a dataset provided by the [Felege Wildlife Lab](https://arts-sciences.und.edu/academics/biology/susan-felege/).
 
 There are around 35,000 images total, about 95% of which contain no birds.  Images are around 5000x3000.  A typical ground truth image looks like this:
 
@@ -38,20 +38,7 @@ These are listed in roughly the order in which you would use them.
 * Example code to use the MD visualization pipeline to visualize results
 * Example code to use the MD inference pipeline to run the trained model
 
-#### und-ducks-inference.py
+### Running the models, and doing stuff with the results
 
-* Currently a stub, will merge with usgs-geese-inference.py the next time
-  I need to run inference with this model.
-
-* Run inference on a folder of images, which means, for each image:
-
-    * Split the image into overlapping patches
-    * Run inference on each patch
-    * Resolve redundant detections
-    * Convert YOLOv5 output to .json (in MegaDetector format)
-
-#### und-ducks-postprocessing.py
-
-* Removed, will merge with usgs-geese-postprocessing the next time
-  I need to run inference with this model.
+Much of the code in this repo is shared with the [Izembek Brant Goose Detector](https://github.com/agentmorris/usgs-geese) repo; the training code is bespoke for each model, but the inference code is identical.  So, for instructions on running the model and postprocessing the results, see the "[Running the model](https://github.com/agentmorris/usgs-geese#running-the-model)" section on the Izembek Detector repo.
 
