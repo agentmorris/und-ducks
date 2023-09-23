@@ -828,6 +828,9 @@ for r in random_seed_to_error_metric.keys():
 
 #%% Split image IDs into train/val (single random seed)
 
+# TODO: what I did here is really dicey; I should have saved the val split in the previous
+# cell, rather than just saving the random seed and re-generating
+
 # We used 0 for the binary mapping in the general sense of defaultness, and 
 # hard-coded the random seed for the multi-class mapping to make sure every class
 # appears in both train and val.

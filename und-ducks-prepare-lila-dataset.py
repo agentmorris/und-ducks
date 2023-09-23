@@ -341,6 +341,7 @@ for s in lines:
     class_name = tokens[1].replace('_',' ')
     print('<li>{} ({} boxes)</li>'.format(class_name,box_count))
 
+
 #%% Preview some images
 
 from md_visualization import visualize_db
